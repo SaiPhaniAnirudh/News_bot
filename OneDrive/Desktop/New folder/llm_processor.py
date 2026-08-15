@@ -1,4 +1,6 @@
 import logging
+import re
+from html import escape
 from openai import OpenAI
 from config import NVIDIA_API_KEY, NVIDIA_BASE_URL, NVIDIA_MODEL, MAX_ARTICLES_PER_CATEGORY
 
@@ -10,29 +12,17 @@ client = OpenAI(
 )
 
 
-def _articles_to_text(articles: list[dict]) -> str:
-    lines = []
-    for i, a in enumerate(articles, 1):
-        lines.append(
-            f"{i}. [{a['source']}] {a['title']}\n"
-            f"   Published: {a['published']}\n"
-            f"   Summary: {a['summary']}\n"
-            f"   URL: {a['url']}"
-        )
-    return "\n\n".join(lines)
-
-
 def _call_llm(prompt: str, max_tokens: int = 2048) -> str:
-    """Call NVIDIA LLM with streaming and return the content (skip reasoning)."""
+    """Call NVIDIA LLM with streaming. Separates reasoning from actual content."""
     completion = client.chat.completions.create(
         model=NVIDIA_MODEL,
         messages=[{"role": "user", "content": prompt}],
-        temperature=0.7,
+        temperature=0.5,
         top_p=0.95,
         max_tokens=max_tokens,
         extra_body={
             "chat_template_kwargs": {"enable_thinking": True},
-            "reasoning_budget": 4096,
+            "reasoning_budget": 2048,
         },
         stream=True,
     )
@@ -42,86 +32,123 @@ def _call_llm(prompt: str, max_tokens: int = 2048) -> str:
         if not chunk.choices:
             continue
         delta = chunk.choices[0].delta
+
+        # Skip reasoning tokens — only collect actual content
+        reasoning = getattr(delta, "reasoning_content", None)
+        if reasoning:
+            continue
+
         if delta.content:
             result.append(delta.content)
 
-    return "".join(result).strip()
+    text = "".join(result).strip()
+
+    # Extra safety: strip any leaked reasoning/thinking patterns
+    junk_patterns = [
+        r"(?i)here'?s a thinking process.*?:",
+        r"(?i)\*\*analyze.*?\*\*:?",
+        r"(?i)let me (?:think|analyze|process).*?:",
+        r"(?i)thinking:.*",
+    ]
+    for pat in junk_patterns:
+        text = re.sub(pat, "", text)
+
+    return text.strip()
+
+
+def _get_summaries(articles: list[dict], category: str) -> list[str]:
+    """Ask the LLM to write ONE short summary per article."""
+    if not articles:
+        return []
+
+    numbered = []
+    for i, a in enumerate(articles, 1):
+        snippet = a['summary'][:150].replace('\n', ' ')
+        numbered.append(f"{i}. {a['title']} -- {snippet}")
+    block = "\n".join(numbered)
+
+    prompt = f"""Write a 1-sentence summary (max 20 words) for each {category} article below.
+
+Format: one line per article, numbered.
+1. summary
+2. summary
+...
+
+No formatting. No filler words. Just facts.
+
+{block}"""
+
+    try:
+        raw = _call_llm(prompt, max_tokens=800)
+        lines = []
+        for line in raw.splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            # Strip "1. " prefix
+            cleaned = re.sub(r"^\d+[\.\)]\s*", "", line).strip()
+            if cleaned and len(cleaned) > 5:
+                lines.append(cleaned)
+        return lines
+    except Exception as e:
+        logger.error(f"LLM summary error for {category}: {e}")
+        return []
 
 
 def summarize_news(articles: list[dict], category: str) -> str:
-    """Summarize articles into a Telegram-ready digest."""
+    """Build a clean, readable news section."""
     if not articles:
-        return f"<i>No new {category} news in the last hour.</i>"
+        return "<i>No fresh news this hour.</i>"
 
-    articles_text = _articles_to_text(articles)
-    max_picks = MAX_ARTICLES_PER_CATEGORY
+    top = articles[:MAX_ARTICLES_PER_CATEGORY]
+    summaries = _get_summaries(top, category)
 
-    prompt = f"""You are a sharp {category} news editor writing for a Telegram channel.
+    blocks = []
+    for i, a in enumerate(top):
+        title = escape(a["title"])
+        url = a["url"]
 
-From the articles below, pick the {max_picks} most important stories from the last hour.
+        if i < len(summaries) and summaries[i]:
+            summary = escape(summaries[i])
+        elif a["summary"] and a["summary"].lower() != a["title"].lower():
+            first_sentence = a["summary"].split(". ")[0].strip()
+            if len(first_sentence) > 20:
+                summary = escape(first_sentence[:120])
+            else:
+                summary = "Tap link for full story."
+        else:
+            summary = "Tap link for full story."
 
-For EACH story output EXACTLY this format (no deviations):
-📌 [Title of the story]
-↳ One or two crisp sentences explaining what happened and why it matters.
-🔗 [URL]
+        blocks.append(
+            f"📌 <b>{title}</b>\n"
+            f"      {summary}\n"
+            f"      🔗 <a href=\"{url}\">Read more</a>"
+        )
 
-After all stories, add one line:
-💡 Trend: one sentence on the pattern you see across these stories.
-
-Rules:
-- Use the exact article title
-- No Markdown symbols (* _ ` # ~) anywhere — plain text only
-- No bullet points, numbers, or extra headers
-- No filler phrases like "In a surprising move" or "According to reports"
-- Factual, direct language
-
-Articles:
-{articles_text}
-
-Output the digest now:"""
-
-    try:
-        return _call_llm(prompt, max_tokens=2048)
-    except Exception as e:
-        logger.error(f"LLM error for {category}: {e}")
-        return _manual_digest(articles[:max_picks])
+    return "\n\n".join(blocks)
 
 
 def ask_llm(question: str, context: str = "") -> str:
-    """Answer a free-form user question using the NVIDIA LLM."""
-    system_context = (
-        "You are a knowledgeable AI and crypto analyst assistant on Telegram. "
-        "Answer the user's question concisely and accurately. "
-        "Do NOT use Markdown symbols (* _ ` # ~). Use plain text only. "
-        "Keep answers under 300 words."
+    """Answer a free-form user question."""
+    prompt = (
+        "You are an AI and crypto analyst on Telegram. "
+        "Answer concisely, under 200 words. No Markdown symbols. Plain text only.\n"
     )
 
     if context:
-        system_context += f"\n\nHere is some live data for context:\n{context}"
+        prompt += f"\nLive market data:\n{context}\n"
 
-    prompt = f"{system_context}\n\nUser question: {question}"
+    prompt += f"\nUser: {question}"
 
     try:
         return _call_llm(prompt, max_tokens=1024)
     except Exception as e:
         logger.error(f"LLM ask error: {e}")
-        return "Sorry, I couldn't process your question right now. Try again later."
-
-
-def _manual_digest(articles: list[dict]) -> str:
-    """Simple fallback digest without LLM."""
-    lines = []
-    for a in articles:
-        lines.append(
-            f"📌 {a['title']}\n"
-            f"↳ {a['summary'] or 'No summary available.'}\n"
-            f"🔗 {a['url']}"
-        )
-    return "\n\n".join(lines)
+        return "Sorry, couldn't process your question. Try again."
 
 
 def build_digest(news: dict[str, list[dict]]) -> str:
-    """Build the full hourly digest message using HTML formatting."""
+    """Build the full hourly digest."""
     from datetime import datetime, timezone
     from prices import fetch_prices
 
@@ -131,26 +158,25 @@ def build_digest(news: dict[str, list[dict]]) -> str:
     ai_digest = summarize_news(news["ai"], "AI")
     crypto_digest = summarize_news(news["crypto"], "Crypto")
 
-    message = (
+    return (
         f"📡 <b>HOURLY DIGEST</b>\n"
         f"🗓 <i>{now}</i>\n"
         f"\n"
         f"━━━━━━━━━━━━━━━━━━━━━\n"
-        f"💰 <b>LIVE CRYPTO PRICES</b>\n"
+        f"💰 <b>MARKET PRICES</b>\n"
         f"━━━━━━━━━━━━━━━━━━━━━\n"
         f"{prices_block}\n"
         f"\n"
         f"━━━━━━━━━━━━━━━━━━━━━\n"
-        f"🤖 <b>AI &amp; TECH NEWS</b>\n"
-        f"━━━━━━━━━━━━━━━━━━━━━\n"
+        f"🤖 <b>AI NEWS</b>\n"
+        f"━━━━━━━━━━━━━━━━━━━━━\n\n"
         f"{ai_digest}\n"
         f"\n"
         f"━━━━━━━━━━━━━━━━━━━━━\n"
         f"₿ <b>CRYPTO NEWS</b>\n"
-        f"━━━━━━━━━━━━━━━━━━━━━\n"
+        f"━━━━━━━━━━━━━━━━━━━━━\n\n"
         f"{crypto_digest}\n"
         f"\n"
         f"━━━━━━━━━━━━━━━━━━━━━\n"
-        f"<i>⚡ Powered by NVIDIA Nemotron · @Mineor_bot</i>"
+        f"<i>⚡ @Mineor_bot · NVIDIA Nemotron</i>"
     )
-    return message

@@ -15,9 +15,55 @@ HEADERS = {
     )
 }
 
+# Keywords to filter relevant articles per category
+AI_KEYWORDS = {
+    "ai", "artificial intelligence", "machine learning", "deep learning",
+    "neural", "gpt", "llm", "openai", "google ai", "nvidia", "chip",
+    "semiconductor", "gpu", "model", "chatbot", "copilot", "gemini",
+    "claude", "anthropic", "meta ai", "robot", "autonomous", "training",
+}
+
+CRYPTO_KEYWORDS = {
+    "bitcoin", "btc", "ethereum", "eth", "crypto", "blockchain", "token",
+    "defi", "nft", "web3", "solana", "binance", "coinbase", "stablecoin",
+    "mining", "wallet", "exchange", "altcoin", "doge", "xrp", "cardano",
+    "polygon", "layer 2", "l2", "dao", "airdrop", "halving", "sec",
+}
+
+
+def _deduplicate(articles: list[dict]) -> list[dict]:
+    """Remove near-duplicate articles (same headline from different outlets)."""
+    seen = []
+    unique = []
+    for a in articles:
+        # Normalize title: lowercase, strip source suffix after " - "
+        title = a["title"].lower().split(" - ")[0].strip()
+        # Check if we already have a similar title
+        is_dup = False
+        for s in seen:
+            # Simple overlap check: if >60% of words match, it's a duplicate
+            words_a = set(title.split())
+            words_b = set(s.split())
+            if not words_a or not words_b:
+                continue
+            overlap = len(words_a & words_b) / min(len(words_a), len(words_b))
+            if overlap > 0.6:
+                is_dup = True
+                break
+        if not is_dup:
+            seen.append(title)
+            unique.append(a)
+    return unique
+
+
+def _is_relevant(article: dict, keywords: set) -> bool:
+    """Check if article title contains any relevant keyword."""
+    # Only check title — summaries often contain unrelated boilerplate
+    text = article["title"].lower()
+    return any(kw in text for kw in keywords)
+
 
 def parse_date(entry) -> datetime:
-    """Parse published date from a feed entry."""
     for attr in ("published_parsed", "updated_parsed"):
         val = getattr(entry, attr, None)
         if val:
@@ -26,13 +72,11 @@ def parse_date(entry) -> datetime:
 
 
 def clean_html(raw: str) -> str:
-    """Strip HTML tags and return plain text."""
     soup = BeautifulSoup(raw, "html.parser")
     return soup.get_text(separator=" ", strip=True)[:500]
 
 
 def fetch_feed(feed: dict, since: datetime) -> list[dict]:
-    """Fetch articles from a single RSS feed published after `since`."""
     articles = []
     try:
         resp = requests.get(feed["url"], headers=HEADERS, timeout=10)
@@ -64,35 +108,36 @@ def fetch_feed(feed: dict, since: datetime) -> list[dict]:
     return articles
 
 
-def fetch_all_news(lookback_hours: int = 1) -> dict[str, list[dict]]:
-    """
-    Fetch AI and crypto news from all configured feeds.
-    Returns a dict with 'ai' and 'crypto' keys containing article lists.
-    """
+def fetch_all_news(lookback_hours: int = 2) -> dict[str, list[dict]]:
     since = datetime.now(timezone.utc) - timedelta(hours=lookback_hours)
     results = {"ai": [], "crypto": []}
 
     logger.info("Fetching AI news...")
     for feed in AI_FEEDS:
         articles = fetch_feed(feed, since)
-        results["ai"].extend(articles)
-        if articles:
-            logger.info(f"  {feed['name']}: {len(articles)} article(s)")
+        # Filter to only AI-relevant articles
+        relevant = [a for a in articles if _is_relevant(a, AI_KEYWORDS)]
+        results["ai"].extend(relevant)
+        if relevant:
+            logger.info(f"  {feed['name']}: {len(relevant)} article(s)")
 
     logger.info("Fetching crypto news...")
     for feed in CRYPTO_FEEDS:
         articles = fetch_feed(feed, since)
-        results["crypto"].extend(articles)
-        if articles:
-            logger.info(f"  {feed['name']}: {len(articles)} article(s)")
+        # Filter to only crypto-relevant articles
+        relevant = [a for a in articles if _is_relevant(a, CRYPTO_KEYWORDS)]
+        results["crypto"].extend(relevant)
+        if relevant:
+            logger.info(f"  {feed['name']}: {len(relevant)} article(s)")
 
-    # Sort by published date descending and cap per category
+    # Deduplicate by title similarity and sort
     for key in results:
+        results[key] = _deduplicate(results[key])
         results[key].sort(key=lambda a: a["published"], reverse=True)
         results[key] = results[key][:MAX_ARTICLES_PER_CATEGORY * 2]
 
     logger.info(
-        f"Total: {len(results['ai'])} AI articles, "
+        f"Total: {len(results['ai'])} AI, "
         f"{len(results['crypto'])} crypto articles"
     )
     return results

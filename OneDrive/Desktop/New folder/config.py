@@ -34,6 +34,6 @@ CRYPTO_FEEDS = [
     {"name": "CryptoSlate", "url": "https://cryptoslate.com/feed/"},
     {"name": "Bitcoin Magazine", "url": "https://bitcoinmagazine.com/.rss/full/"},
     {"name": "The Block", "url": "https://www.theblock.co/rss.xml"},
-    {"name": "Crypto Briefing", "url": "https://cryptobriefing.com/feed/"},
+    # Crypto Briefing removed — publishes unrelated non-crypto articles
     {"name": "NewsBTC", "url": "https://www.newsbtc.com/feed/"},
 ]
