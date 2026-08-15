@@ -12,17 +12,31 @@ client = OpenAI(
 )
 
 
-def _call_llm(prompt: str, max_tokens: int = 2048) -> str:
-    """Call NVIDIA LLM with streaming. Separates reasoning from actual content."""
+def _call_llm(prompt: str, max_tokens: int = 2048, use_thinking: bool = True) -> str:
+    """Call NVIDIA LLM with streaming. Falls back to non-thinking mode if empty."""
+    text = _call_llm_inner(prompt, max_tokens, use_thinking)
+
+    # If thinking mode returned empty, retry without thinking
+    if not text and use_thinking:
+        logger.warning("LLM returned empty with thinking enabled, retrying without thinking...")
+        text = _call_llm_inner(prompt, max_tokens, use_thinking=False)
+
+    return text
+
+
+def _call_llm_inner(prompt: str, max_tokens: int, use_thinking: bool) -> str:
+    """Inner LLM call. Always enables thinking to separate reasoning from output."""
+    reasoning_budget = 2048 if use_thinking else 128
+
     completion = client.chat.completions.create(
         model=NVIDIA_MODEL,
         messages=[{"role": "user", "content": prompt}],
-        temperature=0.5,
+        temperature=0.7,
         top_p=0.95,
         max_tokens=max_tokens,
         extra_body={
             "chat_template_kwargs": {"enable_thinking": True},
-            "reasoning_budget": 2048,
+            "reasoning_budget": reasoning_budget,
         },
         stream=True,
     )
@@ -33,7 +47,7 @@ def _call_llm(prompt: str, max_tokens: int = 2048) -> str:
             continue
         delta = chunk.choices[0].delta
 
-        # Skip reasoning tokens — only collect actual content
+        # Skip reasoning tokens
         reasoning = getattr(delta, "reasoning_content", None)
         if reasoning:
             continue
@@ -43,15 +57,16 @@ def _call_llm(prompt: str, max_tokens: int = 2048) -> str:
 
     text = "".join(result).strip()
 
-    # Extra safety: strip any leaked reasoning/thinking patterns
+    # Strip leaked reasoning patterns
     junk_patterns = [
-        r"(?i)here'?s a thinking process.*?:",
+        r"(?i)here'?s a thinking process.*",
         r"(?i)\*\*analyze.*?\*\*:?",
         r"(?i)let me (?:think|analyze|process).*?:",
         r"(?i)thinking:.*",
+        r"(?i)^\d+\.\s+\*\*.*?\*\*.*$",
     ]
     for pat in junk_patterns:
-        text = re.sub(pat, "", text)
+        text = re.sub(pat, "", text, flags=re.MULTILINE)
 
     return text.strip()
 
@@ -141,7 +156,8 @@ def ask_llm(question: str, context: str = "") -> str:
     prompt += f"\nUser: {question}"
 
     try:
-        return _call_llm(prompt, max_tokens=1024)
+        result = _call_llm(prompt, max_tokens=1024, use_thinking=False)
+        return result or "Sorry, couldn't generate a response. Try rephrasing."
     except Exception as e:
         logger.error(f"LLM ask error: {e}")
         return "Sorry, couldn't process your question. Try again."

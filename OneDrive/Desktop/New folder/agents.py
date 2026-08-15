@@ -150,7 +150,9 @@ Provide:
 Keep it under 150 words. No Markdown. Plain text only."""
 
     try:
-        analysis = _call_llm(prompt, max_tokens=600)
+        analysis = _call_llm(prompt, max_tokens=600, use_thinking=False)
+        if not analysis:
+            return "📊 <b>MARKET SENTIMENT ANALYSIS</b>\n━━━━━━━━━━━━━━━━━━━━━\n\n<i>Not enough data to generate analysis right now.</i>"
         return f"📊 <b>MARKET SENTIMENT ANALYSIS</b>\n━━━━━━━━━━━━━━━━━━━━━\n\n{analysis}"
     except Exception as e:
         logger.error(f"Sentiment agent error: {e}")
@@ -211,7 +213,7 @@ Reply with ONLY the agent name in caps: PRICE, NEWS, RESEARCH, SENTIMENT, or CHA
 Nothing else. Just the agent name."""
 
     try:
-        agent = _call_llm(routing_prompt, max_tokens=20).strip().upper()
+        agent = _call_llm(routing_prompt, max_tokens=20, use_thinking=False).strip().upper()
         # Clean up LLM response — just get the agent name
         for name in ["RESEARCH", "PRICE", "NEWS", "SENTIMENT", "CHAT"]:
             if name in agent:
@@ -253,7 +255,9 @@ Nothing else. Just the agent name."""
         prompt += f"\nUser: {user_message}"
 
         try:
-            result = _call_llm(prompt, max_tokens=1024)
+            result = _call_llm(prompt, max_tokens=1024, use_thinking=False)
+            if not result:
+                result = "Sorry, couldn't generate a response. Try rephrasing your question."
         except Exception:
             result = "Sorry, couldn't process that. Try again."
 
