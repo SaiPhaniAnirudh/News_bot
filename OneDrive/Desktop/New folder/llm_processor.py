@@ -22,13 +22,36 @@ def _articles_to_text(articles: list[dict]) -> str:
     return "\n\n".join(lines)
 
 
+def _call_llm(prompt: str, max_tokens: int = 2048) -> str:
+    """Call NVIDIA LLM with streaming and return the content (skip reasoning)."""
+    completion = client.chat.completions.create(
+        model=NVIDIA_MODEL,
+        messages=[{"role": "user", "content": prompt}],
+        temperature=0.7,
+        top_p=0.95,
+        max_tokens=max_tokens,
+        extra_body={
+            "chat_template_kwargs": {"enable_thinking": True},
+            "reasoning_budget": 4096,
+        },
+        stream=True,
+    )
+
+    result = []
+    for chunk in completion:
+        if not chunk.choices:
+            continue
+        delta = chunk.choices[0].delta
+        if delta.content:
+            result.append(delta.content)
+
+    return "".join(result).strip()
+
+
 def summarize_news(articles: list[dict], category: str) -> str:
-    """
-    Use NVIDIA Nemotron (with reasoning + streaming) to select the most
-    important articles and produce a concise Telegram-ready digest.
-    """
+    """Summarize articles into a Telegram-ready digest."""
     if not articles:
-        return f"_No new {category} news in the last hour._"
+        return f"<i>No new {category} news in the last hour.</i>"
 
     articles_text = _articles_to_text(articles)
     max_picks = MAX_ARTICLES_PER_CATEGORY
@@ -58,40 +81,31 @@ Articles:
 Output the digest now:"""
 
     try:
-        completion = client.chat.completions.create(
-            model=NVIDIA_MODEL,
-            messages=[{"role": "user", "content": prompt}],
-            temperature=1,
-            top_p=0.95,
-            max_tokens=16384,
-            extra_body={
-                "chat_template_kwargs": {"enable_thinking": True},
-                "reasoning_budget": 4096,  # keep reasoning fast for news digests
-            },
-            stream=True,
-        )
-
-        result = []
-        reasoning_shown = False
-        for chunk in completion:
-            if not chunk.choices:
-                continue
-            delta = chunk.choices[0].delta
-
-            # Log reasoning tokens (model's thinking process) but don't include in output
-            reasoning = getattr(delta, "reasoning_content", None)
-            if reasoning and not reasoning_shown:
-                logger.debug(f"[{category}] Model reasoning: {reasoning[:200]}...")
-                reasoning_shown = True
-
-            if delta.content:
-                result.append(delta.content)
-
-        return "".join(result).strip()
-
+        return _call_llm(prompt, max_tokens=2048)
     except Exception as e:
         logger.error(f"LLM error for {category}: {e}")
         return _manual_digest(articles[:max_picks])
+
+
+def ask_llm(question: str, context: str = "") -> str:
+    """Answer a free-form user question using the NVIDIA LLM."""
+    system_context = (
+        "You are a knowledgeable AI and crypto analyst assistant on Telegram. "
+        "Answer the user's question concisely and accurately. "
+        "Do NOT use Markdown symbols (* _ ` # ~). Use plain text only. "
+        "Keep answers under 300 words."
+    )
+
+    if context:
+        system_context += f"\n\nHere is some live data for context:\n{context}"
+
+    prompt = f"{system_context}\n\nUser question: {question}"
+
+    try:
+        return _call_llm(prompt, max_tokens=1024)
+    except Exception as e:
+        logger.error(f"LLM ask error: {e}")
+        return "Sorry, I couldn't process your question right now. Try again later."
 
 
 def _manual_digest(articles: list[dict]) -> str:
@@ -99,7 +113,7 @@ def _manual_digest(articles: list[dict]) -> str:
     lines = []
     for a in articles:
         lines.append(
-            f"📌 *{a['title']}*\n"
+            f"📌 {a['title']}\n"
             f"↳ {a['summary'] or 'No summary available.'}\n"
             f"🔗 {a['url']}"
         )

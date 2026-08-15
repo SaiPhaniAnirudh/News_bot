@@ -14,14 +14,17 @@ NEWS_INTERVAL_MINUTES = int(os.getenv("NEWS_INTERVAL_MINUTES", "60"))
 MAX_ARTICLES_PER_CATEGORY = int(os.getenv("MAX_ARTICLES_PER_CATEGORY", "5"))
 
 AI_FEEDS = [
+    {"name": "Google News AI", "url": "https://news.google.com/rss/search?q=artificial+intelligence&hl=en-US&gl=US&ceid=US:en"},
     {"name": "TechCrunch AI", "url": "https://techcrunch.com/category/artificial-intelligence/feed/"},
-    {"name": "VentureBeat AI", "url": "https://venturebeat.com/category/ai/feed/"},
     {"name": "The Verge AI", "url": "https://www.theverge.com/rss/ai-artificial-intelligence/index.xml"},
     {"name": "MIT Tech Review", "url": "https://www.technologyreview.com/feed/"},
-    {"name": "AI News", "url": "https://artificialintelligence-news.com/feed/"},
-    {"name": "Wired AI", "url": "https://www.wired.com/feed/category/artificial-intelligence/latest/rss"},
-    {"name": "Ars Technica AI", "url": "https://feeds.arstechnica.com/arstechnica/index"},
+    {"name": "Ars Technica", "url": "https://feeds.arstechnica.com/arstechnica/index"},
     {"name": "ZDNet AI", "url": "https://www.zdnet.com/topic/artificial-intelligence/rss.xml"},
+    {"name": "MarkTechPost", "url": "https://www.marktechpost.com/feed/"},
+    {"name": "The Decoder", "url": "https://the-decoder.com/feed/"},
+    {"name": "OpenAI Blog", "url": "https://openai.com/blog/rss.xml"},
+    {"name": "Google AI Blog", "url": "https://blog.google/technology/ai/rss/"},
+    {"name": "ScienceDaily AI", "url": "https://www.sciencedaily.com/rss/computers_math/artificial_intelligence.xml"},
 ]
 
 CRYPTO_FEEDS = [

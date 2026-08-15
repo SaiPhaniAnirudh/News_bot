@@ -4,6 +4,7 @@ import logging
 logger = logging.getLogger(__name__)
 
 COINGECKO_URL = "https://api.coingecko.com/api/v3/simple/price"
+COINGECKO_SEARCH_URL = "https://api.coingecko.com/api/v3/search"
 
 TOKENS = {
     "bitcoin":       {"symbol": "BTC",  "emoji": "₿"},
@@ -17,6 +18,11 @@ TOKENS = {
     "chainlink":     {"symbol": "LINK", "emoji": "🔗"},
     "sui":           {"symbol": "SUI",  "emoji": "💧"},
 }
+
+# Reverse lookup: symbol -> coingecko id
+SYMBOL_TO_ID = {}
+for cg_id, meta in TOKENS.items():
+    SYMBOL_TO_ID[meta["symbol"].lower()] = cg_id
 
 
 def _arrow(change: float) -> str:
@@ -37,11 +43,11 @@ def _fmt_price(price: float) -> str:
     elif price >= 1:
         return f"${price:,.2f}"
     else:
-        return f"${price:.4f}"
+        return f"${price:.6f}"
 
 
 def fetch_prices() -> str:
-    """Fetch live prices from CoinGecko and return an HTML-formatted Telegram block."""
+    """Fetch live prices for top tokens and return an HTML-formatted Telegram block."""
     ids = ",".join(TOKENS.keys())
     try:
         resp = requests.get(
@@ -50,6 +56,7 @@ def fetch_prices() -> str:
                 "ids": ids,
                 "vs_currencies": "usd",
                 "include_24hr_change": "true",
+                "include_market_cap": "true",
             },
             timeout=10,
         )
@@ -73,3 +80,80 @@ def fetch_prices() -> str:
         )
 
     return "\n".join(lines) if lines else "<i>Price data unavailable</i>"
+
+
+def fetch_single_token(query: str) -> str:
+    """Fetch detailed price info for a single token by name or symbol."""
+    query = query.strip().lower()
+
+    # Check if it's a known symbol
+    coin_id = SYMBOL_TO_ID.get(query)
+
+    # Check if it's a known coingecko id
+    if not coin_id and query in TOKENS:
+        coin_id = query
+
+    # Search CoinGecko for unknown tokens
+    if not coin_id:
+        try:
+            resp = requests.get(
+                COINGECKO_SEARCH_URL,
+                params={"query": query},
+                timeout=10,
+            )
+            resp.raise_for_status()
+            coins = resp.json().get("coins", [])
+            if coins:
+                coin_id = coins[0]["id"]
+            else:
+                return f"Could not find a token matching '{query}'."
+        except Exception as e:
+            logger.warning(f"Token search failed: {e}")
+            return "Token search failed. Try again later."
+
+    try:
+        resp = requests.get(
+            COINGECKO_URL,
+            params={
+                "ids": coin_id,
+                "vs_currencies": "usd",
+                "include_24hr_change": "true",
+                "include_market_cap": "true",
+                "include_24hr_vol": "true",
+            },
+            timeout=10,
+        )
+        resp.raise_for_status()
+        data = resp.json().get(coin_id, {})
+    except Exception as e:
+        logger.warning(f"Price fetch for {coin_id} failed: {e}")
+        return "Price fetch failed. Try again later."
+
+    if not data:
+        return f"No price data for '{query}'."
+
+    price = data.get("usd", 0)
+    change = data.get("usd_24h_change")
+    mcap = data.get("usd_market_cap", 0)
+    vol = data.get("usd_24h_vol", 0)
+
+    change_str = f"{change:+.2f}%" if change is not None else "N/A"
+    arrow = _arrow(change) if change is not None else "➡️"
+
+    def fmt_large(n):
+        if n >= 1_000_000_000:
+            return f"${n / 1_000_000_000:.2f}B"
+        elif n >= 1_000_000:
+            return f"${n / 1_000_000:.2f}M"
+        elif n >= 1_000:
+            return f"${n / 1_000:.2f}K"
+        return f"${n:,.2f}"
+
+    return (
+        f"{arrow} <b>{coin_id.upper()}</b>\n"
+        f"\n"
+        f"💵 Price: <b>{_fmt_price(price)}</b>\n"
+        f"📊 24h Change: <code>{change_str}</code>\n"
+        f"📈 Market Cap: {fmt_large(mcap)}\n"
+        f"🔄 24h Volume: {fmt_large(vol)}"
+    )
