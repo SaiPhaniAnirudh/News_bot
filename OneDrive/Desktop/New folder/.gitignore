@@ -1,4 +1,6 @@
 .env
 *.log
+*.db
 __pycache__/
 *.pyc
+test_feeds.py
